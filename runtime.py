@@ -17,6 +17,9 @@ CREATE TABLE jobs(
  receipt TEXT, result_path TEXT
 );
 CREATE TABLE ledger(id TEXT PRIMARY KEY, result BLOB NOT NULL, receipt TEXT NOT NULL);
+CREATE TABLE fence(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+ sealed INTEGER NOT NULL);
+INSERT INTO fence VALUES(1,0);
 """
 
 
@@ -94,16 +97,35 @@ def submit(root, batch):
 
 def commit_result(db, name, result, ack, path):
     # Existing atomic accounting boundary, intentionally separate from file I/O.
+    # The fence check rides inside the same transaction: once a takeover seals
+    # this replica, a stale executor resumed from a public hook cannot commit a
+    # late ledger row here. Sealer and executor serialize on this database's
+    # own write lock, so no cross-database lock is ever needed.
     with db:
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("SELECT sealed FROM fence WHERE singleton=1").fetchone()[0]:
+            raise ValueError("FENCED")
         db.execute("INSERT INTO ledger VALUES(?,?,?)",
                    (name, result, encode(ack).decode()))
         db.execute("UPDATE jobs SET state='completed',receipt=?,result_path=? WHERE id=?",
                    (encode(ack).decode(), path, name))
 
 
+def seal(root):
+    """Idempotently fence this replica against any further ledger commit."""
+    with connect(root) as db:
+        db.execute("UPDATE fence SET sealed=1 WHERE singleton=1")
+
+
+def sealed(db):
+    return db.execute("SELECT sealed FROM fence WHERE singleton=1").fetchone()[0] != 0
+
+
 def run_one(root):
     root = Path(root)
     with connect(root) as db:
+        if sealed(db):
+            return False  # Decommissioned by a takeover; never accounts again.
         job = db.execute("SELECT id,digest FROM jobs WHERE state IN ('pending','running') ORDER BY id LIMIT 1").fetchone()
         if job is None:
             return False

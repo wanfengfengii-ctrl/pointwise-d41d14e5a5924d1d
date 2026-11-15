@@ -1,0 +1,1 @@
+{"batch_id":"second","rows":[{"deleted":false,"id":"x","minute":2,"rev":1,"station":"north","value":8},{"deleted":false,"id":"x","minute":3,"rev":2,"station":"south","value":-4},{"deleted":false,"id":"y","minute":3,"rev":1,"station":"south","value":4}],"scale":2}
